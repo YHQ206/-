@@ -1,0 +1,7 @@
+# This directory holds the quiz question banks
+# Supported formats: .txt, .pdf, .docx
+
+# Directory structure:
+# data/
+# ├── 习概/    # 习近平新时代中国特色社会主义思想概论
+# └── 马原/    # 马克思主义基本原理

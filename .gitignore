@@ -1,0 +1,105 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+*.egg-info/
+dist/
+build/
+*.egg
+
+# SQLite database
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.codex/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Build
+frontend/dist/
+frontend/.vite/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Database backups
+*.sql
+
+# Output files
+output_mayuan/
+
+# Temporary scripts (根目录下的临时脚本)
+_*.py
+!scripts/_*.py
+
+# Temporary text files
+填空题*.txt
+填空题*.md
+
+# Data files (题库文件太大，不上传)
+data/*.txt
+data/*.pdf
+data/*.docx
+data/**/*.txt
+data/**/*.pdf
+data/**/*.docx
+!data/**/*.md
+
+# But keep the data directory structure
+!data/.gitkeep
+!data/习概/.gitkeep
+!data/马原/.gitkeep
+
+# Backend instance
+backend/instance/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# mypy
+.mypy_cache/
+
+# pytest
+.pytest_cache/
+
+# Coverage
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
