@@ -138,6 +138,7 @@ def get_random_questions():
             'type': q.type,
             'content': q.content,
             'options': opts,
+            'answer': q.answer,
             'status': progress.status if progress else 'unanswered',
             'is_favorite': favorite is not None
         })
@@ -317,11 +318,26 @@ def save_position():
 
 @questions_bp.route('/progress', methods=['DELETE'])
 def clear_all_progress():
-    """清空所有进度和记录"""
+    """清空进度和记录（支持按科目清除）"""
     from models import Record
-    Record.query.delete()
-    Progress.query.delete()
-    Favorite.query.delete()
-    LastPosition.query.delete()
+    subject_id = request.args.get('subject_id', type=int)
+
+    if subject_id:
+        # 只清除指定科目的记录
+        question_ids = db.session.query(Question.id).join(Chapter).filter(
+            Chapter.subject_id == subject_id
+        ).subquery()
+
+        Record.query.filter(Record.question_id.in_(question_ids)).delete(synchronize_session=False)
+        Progress.query.filter(Progress.question_id.in_(question_ids)).delete(synchronize_session=False)
+        Favorite.query.filter(Favorite.question_id.in_(question_ids)).delete(synchronize_session=False)
+        LastPosition.query.filter(LastPosition.subject_id == subject_id).delete()
+    else:
+        # 清除所有记录
+        Record.query.delete()
+        Progress.query.delete()
+        Favorite.query.delete()
+        LastPosition.query.delete()
+
     db.session.commit()
-    return jsonify({'code': 0, 'message': '已清空所有记录'})
+    return jsonify({'code': 0, 'message': '已清空记录'})

@@ -45,6 +45,58 @@
       </el-tab-pane>
     </el-tabs>
 
+    <!-- 导出和筛选栏 -->
+    <div class="export-bar">
+      <div class="export-left">
+        <!-- 错误次数筛选 -->
+        <el-select v-model="errorFilter" placeholder="错误次数筛选" style="width: 140px" @change="filterQuestions">
+          <el-option label="全部错题" value="all" />
+          <el-option label="错 ≥2 次" value="2" />
+          <el-option label="错 ≥3 次" value="3" />
+          <el-option label="错 ≥5 次" value="5" />
+          <el-option label="错 ≥10 次" value="10" />
+        </el-select>
+
+        <!-- 导出按钮 -->
+        <el-dropdown @command="handleExport" placement="bottom-start">
+          <el-button type="primary" plain>
+            <el-icon><Download /></el-icon>
+            导出错题
+            <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+          </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item :command="{ format: 'word', scope: 'selected' }" :disabled="selectedIds.length === 0">
+                <el-icon><Document /></el-icon>
+                导出勾选的题目 ({{ selectedIds.length }} 道)
+              </el-dropdown-item>
+              <el-dropdown-item :command="{ format: 'excel', scope: 'selected' }" :disabled="selectedIds.length === 0">
+                <el-icon><Grid /></el-icon>
+                导出勾选的题目 ({{ selectedIds.length }} 道)
+              </el-dropdown-item>
+              <el-dropdown-item divided :command="{ format: 'word', scope: 'filtered' }">
+                <el-icon><Document /></el-icon>
+                导出筛选结果 ({{ displayQuestions.length }} 道)
+              </el-dropdown-item>
+              <el-dropdown-item :command="{ format: 'excel', scope: 'filtered' }">
+                <el-icon><Grid /></el-icon>
+                导出筛选结果 ({{ displayQuestions.length }} 道)
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </div>
+
+      <div class="export-right">
+        <el-button v-if="selectedIds.length > 0" text type="primary" @click="selectedIds = []">
+          取消全选
+        </el-button>
+        <el-button text type="primary" @click="selectAll">
+          {{ selectedIds.length === displayQuestions.length ? '取消全选' : '全选' }}
+        </el-button>
+      </div>
+    </div>
+
     <!-- 操作栏 -->
     <div class="action-bar" v-if="activeTab === 'pending'">
       <div class="filter-tabs">
@@ -90,9 +142,16 @@
         v-for="(q, index) in displayQuestions"
         :key="q.id"
         class="wrong-item"
-        :class="{ stubborn: q.is_stubborn, mastered: q.mastered }"
+        :class="{ stubborn: q.is_stubborn, mastered: q.mastered, selected: selectedIds.includes(q.id) }"
+        @click="toggleSelect(q.id)"
       >
         <div class="item-header">
+          <el-checkbox
+            :model-value="selectedIds.includes(q.id)"
+            @click.stop
+            @change="toggleSelect(q.id)"
+            class="item-checkbox"
+          />
           <span class="item-index">{{ index + 1 }}</span>
           <el-tag :type="getTypeTag(q.type)" size="small">{{ getTypeText(q.type) }}</el-tag>
           <el-tag v-if="q.is_stubborn" type="danger" size="small" effect="dark">
@@ -146,17 +205,17 @@
         <div v-if="currentQuestion.type === 'single' || currentQuestion.type === 'multiple'" class="quiz-options">
           <div
             v-for="opt in currentQuestion.options"
-            :key="opt.key"
+            :key="opt.label"
             class="quiz-option"
             :class="{
-              selected: isSelected(opt.key),
-              correct: showAnswer && isCorrectOption(opt.key),
-              wrong: showAnswer && isSelected(opt.key) && !isCorrectOption(opt.key)
+              selected: isSelected(opt.label),
+              correct: showAnswer && isCorrectOption(opt.label),
+              wrong: showAnswer && isSelected(opt.label) && !isCorrectOption(opt.label)
             }"
-            @click="selectOption(opt.key)"
+            @click="selectOption(opt.label)"
           >
-            <span class="option-key">{{ opt.key }}</span>
-            <span class="option-text">{{ opt.text }}</span>
+            <span class="option-key">{{ opt.label }}</span>
+            <span class="option-text">{{ opt.content }}</span>
           </div>
         </div>
 
@@ -198,6 +257,26 @@
             <div class="result-answer">正确答案：{{ currentQuestion.answer }}</div>
           </div>
         </div>
+
+        <!-- 查看解析按钮 -->
+        <div v-if="showAnswer && currentQuestion.explanation" class="explanation-toggle">
+          <el-button
+            type="primary"
+            plain
+            @click="showExplanation = !showExplanation"
+            :icon="showExplanation ? 'ArrowUp' : 'ArrowDown'"
+          >
+            {{ showExplanation ? '收起解析' : '查看解析' }}
+          </el-button>
+        </div>
+
+        <!-- 解析内容 -->
+        <transition name="fade">
+          <div v-if="showExplanation && currentQuestion.explanation" class="explanation">
+            <div class="explanation-title">📝 解析</div>
+            <div class="explanation-content">{{ currentQuestion.explanation }}</div>
+          </div>
+        </transition>
         <!-- 鼓励语 -->
         <EncourageMessage
           :show="showEncourage"
@@ -224,7 +303,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { VideoPlay, Warning, CircleCheck, CircleClose, RefreshRight } from '@element-plus/icons-vue'
+import { VideoPlay, Warning, CircleCheck, CircleClose, RefreshRight, Download, Document, Grid, ArrowDown, ArrowUp } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { getSubjects, getWrongQuestions, getQuestionDetail, submitAnswer as submitAnswerApi } from '../api'
 import CelebrationEffect from '../components/CelebrationEffect.vue'
@@ -236,6 +315,8 @@ const subjectId = ref(null)
 const questions = ref([])
 const activeTab = ref('pending')
 const filter = ref('all')
+const errorFilter = ref('all')  // 错误次数筛选
+const selectedIds = ref([])  // 勾选的题目 ID
 
 // 顽固错题阈值（错误次数 >= 3 次）
 const STUBBORN_THRESHOLD = 3
@@ -243,12 +324,13 @@ const STUBBORN_THRESHOLD = 3
 // 刷题相关
 const showQuiz = ref(false)
 const quizType = ref('pending')
-const quizQuestions = ref([])
+const quizQuestions = ref([]) // 快照，与源数据完全独立，不受 pendingQuestions 变化影响
 const quizIndex = ref(0)
 const currentQuestion = ref(null)
 const userAnswer = ref('')
 const showAnswer = ref(false)
 const isCorrect = ref(false)
+const showExplanation = ref(false)
 
 // 连胜相关
 const correctStreak = ref(0)
@@ -268,8 +350,32 @@ const displayQuestions = computed(() => {
   if (activeTab.value === 'pending' && filter.value === 'stubborn') {
     list = list.filter(q => q.attempt_count >= STUBBORN_THRESHOLD)
   }
+  // 错误次数筛选
+  if (errorFilter.value !== 'all') {
+    const minCount = parseInt(errorFilter.value)
+    list = list.filter(q => q.attempt_count >= minCount)
+  }
   return list
 })
+
+// 全选/取消全选
+const selectAll = () => {
+  if (selectedIds.value.length === displayQuestions.value.length) {
+    selectedIds.value = []
+  } else {
+    selectedIds.value = displayQuestions.value.map(q => q.id)
+  }
+}
+
+// 切换选中状态
+const toggleSelect = (id) => {
+  const index = selectedIds.value.indexOf(id)
+  if (index === -1) {
+    selectedIds.value.push(id)
+  } else {
+    selectedIds.value.splice(index, 1)
+  }
+}
 
 // 空状态文字
 const emptyText = computed(() => {
@@ -319,12 +425,14 @@ const getTypeTag = (type) => {
 // 开始刷错题
 const startWrongQuiz = (type) => {
   quizType.value = type
+  // 深拷贝每道题，避免与源数据共享引用导致 reactvity 穿透
+  const cloneQuestions = (list) => list.map(q => ({ ...q }))
   if (type === 'stubborn') {
-    quizQuestions.value = pendingQuestions.value.filter(q => q.attempt_count >= STUBBORN_THRESHOLD)
+    quizQuestions.value = cloneQuestions(pendingQuestions.value.filter(q => q.attempt_count >= STUBBORN_THRESHOLD))
   } else if (type === 'mastered') {
-    quizQuestions.value = [...masteredQuestions.value]
+    quizQuestions.value = cloneQuestions(masteredQuestions.value)
   } else {
-    quizQuestions.value = [...pendingQuestions.value]
+    quizQuestions.value = cloneQuestions(pendingQuestions.value)
   }
 
   if (quizQuestions.value.length === 0) {
@@ -350,6 +458,7 @@ const loadQuizQuestion = async () => {
     userAnswer.value = ''
     showAnswer.value = false
     isCorrect.value = false
+    showExplanation.value = false
   }
 }
 
@@ -391,6 +500,8 @@ const submitAnswer = async () => {
   const { data } = await submitAnswerApi(currentQuestion.value.id, userAnswer.value)
   isCorrect.value = data.data.is_correct
   showAnswer.value = true
+  // 答错自动显示解析，答对隐藏解析
+  showExplanation.value = !isCorrect.value
 
   // 更新本地数据
   const qIndex = questions.value.findIndex(q => q.id === currentQuestion.value.id)
@@ -450,6 +561,46 @@ const closeQuiz = () => {
 onMounted(() => {
   loadData()
 })
+
+// 导出错题
+const handleExport = async ({ format, scope }) => {
+  let exportIds = []
+
+  if (scope === 'selected') {
+    // 导出勾选的题目
+    if (selectedIds.value.length === 0) {
+      ElMessage.warning('请先勾选要导出的题目')
+      return
+    }
+    exportIds = selectedIds.value
+  } else {
+    // 导出筛选结果
+    if (displayQuestions.value.length === 0) {
+      ElMessage.warning('暂无错题可导出')
+      return
+    }
+    exportIds = displayQuestions.value.map(q => q.id)
+  }
+
+  try {
+    const baseUrl = import.meta.env.DEV ? 'http://localhost:5000' : ''
+    const idsParam = exportIds.join(',')
+    const url = `${baseUrl}/api/export/wrong/${format}?subject_id=${subjectId.value}&tab=${activeTab.value}&ids=${idsParam}`
+
+    // 创建隐藏的 a 标签来下载
+    const link = document.createElement('a')
+    link.href = url
+    link.style.display = 'none'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+
+    ElMessage.success(`正在导出 ${exportIds.length} 道错题...`)
+  } catch (error) {
+    ElMessage.error('导出失败，请稍后重试')
+    console.error('Export error:', error)
+  }
+}
 </script>
 
 <style scoped>
@@ -548,6 +699,42 @@ onMounted(() => {
   margin-bottom: 0;
 }
 
+/* 导出栏 */
+.export-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 16px 0;
+  padding: 12px 20px;
+  background: var(--card-bg);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: var(--radius-md);
+  box-shadow: var(--card-shadow);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+}
+
+.export-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.export-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.export-tip {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.item-checkbox {
+  margin-right: 4px;
+}
+
 /* 操作栏 */
 .action-bar {
   display: flex;
@@ -614,6 +801,15 @@ onMounted(() => {
 
 .wrong-item.mastered:hover {
   background: linear-gradient(135deg, rgba(32, 201, 151, 0.1) 0%, rgba(150, 242, 215, 0.1) 100%);
+}
+
+.wrong-item.selected {
+  background: linear-gradient(135deg, rgba(102, 177, 255, 0.08) 0%, rgba(132, 94, 247, 0.08) 100%);
+  border-left-color: var(--primary);
+}
+
+.wrong-item.selected:hover {
+  background: linear-gradient(135deg, rgba(102, 177, 255, 0.15) 0%, rgba(132, 94, 247, 0.15) 100%);
 }
 
 .wrong-item:last-child {
@@ -884,6 +1080,60 @@ onMounted(() => {
   display: flex;
   justify-content: flex-end;
   gap: 12px;
+}
+
+/* 解析样式 */
+.explanation-toggle {
+  text-align: center;
+  margin-top: 16px;
+}
+
+.explanation {
+  margin-top: 16px;
+  padding: 20px;
+  background: linear-gradient(135deg, rgba(255, 245, 247, 0.8) 0%, rgba(240, 230, 255, 0.8) 100%);
+  border-radius: var(--radius-md);
+  border-left: 4px solid var(--secondary);
+  animation: slideDown 0.3s ease;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+  transform: translateY(-10px);
+}
+
+.explanation-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--secondary);
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.explanation-content {
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--text-primary);
+  white-space: pre-wrap;
 }
 
 /* 响应式 */

@@ -45,18 +45,18 @@
         <div v-if="question.type === 'single' || question.type === 'multiple'" class="options">
           <div
             v-for="opt in question.options"
-            :key="opt.key"
+            :key="opt.key || opt.label"
             class="option-item"
             :class="{
-              selected: isSelected(opt.key),
-              correct: showAnswer && isCorrectOption(opt.key),
-              wrong: showAnswer && isSelected(opt.key) && !isCorrectOption(opt.key)
+              selected: isSelected(opt.key || opt.label),
+              correct: showAnswer && isCorrectOption(opt.key || opt.label),
+              wrong: showAnswer && isSelected(opt.key || opt.label) && !isCorrectOption(opt.key || opt.label)
             }"
-            @click="selectOption(opt.key)"
+            @click="selectOption(opt.key || opt.label)"
           >
-            <span class="option-key">{{ opt.key }}</span>
-            <span class="option-text">{{ opt.text }}</span>
-            <el-icon v-if="showAnswer && isCorrectOption(opt.key)" class="check-icon">
+            <span class="option-key">{{ opt.key || opt.label }}</span>
+            <span class="option-text">{{ opt.text || opt.content }}</span>
+            <el-icon v-if="showAnswer && isCorrectOption(opt.key || opt.label)" class="check-icon">
               <Check />
             </el-icon>
           </div>

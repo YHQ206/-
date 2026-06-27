@@ -44,7 +44,7 @@ export const getChapterStats = (subjectId) => api.get('/stats/chapters', { param
 // 进度相关
 export const getLastPosition = (subjectId) => api.get('/progress/last', { params: { subject_id: subjectId } })
 export const savePosition = (data) => api.post('/progress/save', data)
-export const clearAllProgress = () => api.delete('/progress')
+export const clearAllProgress = (subjectId) => api.delete('/progress', { params: { subject_id: subjectId } })
 
 // 导入题库（单独超时 120s）
 export const importQuestions = (mode) => api.post('/import', { mode }, { timeout: 120000 })

@@ -60,9 +60,8 @@ temp/
 # Output files
 output_mayuan/
 
-# Temporary scripts (根目录下的临时脚本)
-_*.py
-!scripts/_*.py
+# Scripts (临时处理脚本，不提交)
+scripts/
 
 # Temporary text files
 填空题*.txt

@@ -263,12 +263,12 @@ const doImport = async (mode) => {
 
 const confirmClear = () => {
   ElMessageBox.confirm(
-    '确定要清空所有做题记录吗？此操作不可恢复！',
+    `确定要清空「${currentSubject.value}」的所有做题记录吗？此操作不可恢复！`,
     '警告',
     { type: 'warning' }
   ).then(async () => {
-    await clearAllProgress()
-    ElMessage.success('已清空所有记录')
+    await clearAllProgress(subjectId.value)
+    ElMessage.success(`已清空「${currentSubject.value}」的所有记录`)
     loadData()
   }).catch(() => {})
 }

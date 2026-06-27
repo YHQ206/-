@@ -51,6 +51,32 @@ def _extract_chapter_names(doc):
     return chapters
 
 
+def _extract_chapter_names_from_toc(doc):
+    """从单行目录中提取章节名称（适配学习通格式）
+
+    目录格式示例：
+    导论xxx...2 第 1 章xxx...9 第 2 章xxx...15 第 4 章xxx...20 ...
+    """
+    # 查找包含多个章节标记的目录行
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        # 包含"导论"和"第X章"的行是目录
+        if '导论' in text and '第' in text and '章' in text:
+            chapters = []
+            # 提取导论（导论后面是章节名，然后是点和页码）
+            m = re.search(r'导论(.+?)\.{2,}', text)
+            if m:
+                chapters.append('导论 ' + m.group(1).strip())
+            # 提取各章（第 X 章 + 章节名 + 点和页码）
+            for m in re.finditer(r'第\s*(\d+)\s*章\s*(.+?)\.{2,}', text):
+                ch_name = f'第{m.group(1)}章 {m.group(2).strip()}'
+                chapters.append(ch_name)
+            if chapters:
+                return chapters
+    # 备用：尝试每行一个章节名的格式
+    return _extract_chapter_names(doc)
+
+
 def _get_line_red_answer_keys(para):
     """获取一行中红色标记的选项字母列表
 
@@ -194,6 +220,33 @@ def _is_option_line(text):
     if '（A）' in text:
         return True
     return False
+
+
+def _is_new_stem_line(text):
+    """判断是否是新题干的开始（用于v2解析器）"""
+    # 包含填空下划线
+    if '________' in text or '______' in text:
+        return True
+    # 以句号、问号、感叹号结尾（且较长，排除短选项）
+    if text.endswith(('。', '？', '！')) and len(text) > 15:
+        return True
+    # 以逗号结尾（题干续行信号，但不是新题干）
+    # 不包含在这里，因为逗号结尾更可能是题干续行
+    return False
+
+
+def _add_option_to_question(q, text, has_red, red_keys):
+    """给题目添加一个选项"""
+    existing_keys = {o[0] for o in q['options']}
+    for letter in 'ABCDEFGH':
+        if letter not in existing_keys:
+            q['options'].append((letter, text))
+            # 红色标记的是答案
+            if has_red:
+                q['red_keys'].append(letter)
+            elif red_keys:
+                q['red_keys'].extend(red_keys)
+            break
 
 
 def _is_likely_question_stem(text):
@@ -735,9 +788,333 @@ def _parse_judges(items, questions, chapter_name, table_judge_answers):
         })
 
 
+def _is_likely_stem_line(text):
+    """判断是否是题干行（新格式）"""
+    # 以问号、句号结尾
+    if text.endswith(('？', '。', '！', '?', '.', '!')):
+        return True
+    # 包含"下列"、"以下"等词
+    if any(word in text for word in ['下列', '以下', '以下哪', '下列哪']):
+        return True
+    # 包含问号
+    if '？' in text or '?' in text:
+        return True
+    # 包含填空下划线
+    if '________' in text or '______' in text:
+        return True
+    # 以"是"结尾且较长
+    if text.endswith('是') and len(text) > 5:
+        return True
+    # 包含句号在中间
+    if '。' in text and len(text) > 20:
+        return True
+    return False
+
+
+def _is_option_line_v2(text, has_red):
+    """判断是否是选项行（新格式：无标记选项行）
+
+    选项行特点：
+    - 短行（通常少于40字）
+    - 不以句号、问号结尾
+    - 不是题干特征
+    """
+    # 有显式选项标记的是选项行
+    if re.search(r'（[A-H]）', text):
+        return True
+    # 短行且不以句号结尾
+    if len(text) < 40 and not text.endswith(('。', '？', '！', '，', ',')):
+        # 排除题干特征
+        if not _is_likely_stem_line(text):
+            return True
+    return False
+
+
+def _parse_single_choice_v2(items, questions, chapter_name):
+    """解析单选题（学习通格式）
+
+    特点：选项无标记，答案用红色字体标记整行
+    处理三种选项格式：
+    1. 显式标记: （A）选项 （B）选项...
+    2. Tab分隔: 选项A\t（B）选项B\t（C）选项C...
+    3. 单独成行: 每个选项一行（无标记），红色行=答案
+    """
+    current_q = None
+
+    i = 0
+    while i < len(items):
+        para_idx, text, red_keys, has_red, red_full_text, _ul = items[i]
+
+        # 检查是否有显式选项标记 （A）（B）
+        has_explicit_options = bool(re.search(r'（[A-H]）', text))
+
+        # 判断当前行是否是新题干的开始
+        is_new_stem = _is_new_stem_line(text)
+
+        # ===== 情况1: 有显式选项标记 =====
+        if has_explicit_options:
+            opts = _parse_options_with_first_unmarked(text)
+            if current_q is not None:
+                for key, opt_text in opts:
+                    current_q['options'].append((key, opt_text))
+                    if red_keys and key in red_keys:
+                        current_q['red_keys'].append(key)
+                    elif has_red:
+                        if opt_text in red_full_text or red_full_text in opt_text:
+                            current_q['red_keys'].append(key)
+            else:
+                # 没有当前题目，可能是题干+选项在同一行
+                parts = re.split(r'（([A-H])）', text)
+                if len(parts) >= 3:
+                    stem = parts[0].strip()
+                    current_q = {'stem': stem, 'options': [], 'red_keys': []}
+                    for j in range(1, len(parts), 2):
+                        if j + 1 < len(parts):
+                            key = parts[j]
+                            opt_text = parts[j + 1].strip()
+                            current_q['options'].append((key, opt_text))
+                            if red_keys and key in red_keys:
+                                current_q['red_keys'].append(key)
+                            elif has_red and opt_text in red_full_text:
+                                current_q['red_keys'].append(key)
+                else:
+                    current_q = {'stem': text, 'options': [], 'red_keys': []}
+            i += 1
+            continue
+
+        # ===== 情况2: 新题干开始 =====
+        if is_new_stem:
+            if current_q and current_q['stem']:
+                _save_choice_question(current_q, 'single', questions, chapter_name)
+            current_q = {'stem': text, 'options': [], 'red_keys': []}
+            i += 1
+            continue
+
+        # ===== 情况3: 非显式选项、非新题干 → 选项行或题干续行 =====
+        if current_q is None:
+            current_q = {'stem': text, 'options': [], 'red_keys': []}
+            i += 1
+            continue
+
+        # 如果已有4个选项，认为这是新题目
+        if len(current_q['options']) >= 4:
+            _save_choice_question(current_q, 'single', questions, chapter_name)
+            current_q = {'stem': text, 'options': [], 'red_keys': []}
+            i += 1
+            continue
+
+        # 当前题干以句号/问号结尾 → 后续行都是选项
+        if current_q['stem'].endswith(('。', '？', '！')):
+            _add_option_to_question(current_q, text, has_red, red_keys)
+            i += 1
+            continue
+
+        # 当前题干以逗号结尾 → 题干续行
+        if current_q['stem'].endswith(('，', ',')):
+            current_q['stem'] += text
+            i += 1
+            continue
+
+        # 关键逻辑：题干不以句号结尾
+        # 收集后续行，判断是选项还是题干续行
+        if not current_q['options']:
+            # 还没有选项，收集后续选项行
+            # 规则：连续的短行（<=40字，不以逗号结尾）视为选项
+            # 遇到任何"新题干信号"停止
+            option_lines = []
+            j = i
+            while j < len(items):
+                j_text = items[j][1]
+                j_has_red = items[j][3]
+                j_red_keys = items[j][2]
+
+                # 新题干信号：以句号/问号结尾且较长、有下划线、有显式选项标记
+                if j > i:
+                    if re.search(r'（[A-H]）', j_text):
+                        break
+                    if j_text.startswith('____'):
+                        break
+                    # 以句号/问号结尾且较长 → 新题干
+                    if j_text.endswith(('。', '？', '！')) and len(j_text) > 15:
+                        break
+                    # 以"是"结尾且较长 → 新题干（如"主要根源是"）
+                    if j_text.endswith('是') and len(j_text) > 15:
+                        break
+
+                # 判断这行是选项还是题干续行
+                # 选项特征：短行（<=40字）且不以逗号结尾
+                # 题干续行特征：以逗号结尾、或较长
+                if len(j_text) <= 40 and not j_text.endswith(('，', ',')):
+                    option_lines.append((j, j_text, j_has_red, j_red_keys))
+                else:
+                    # 这行不是选项（可能是题干续行或新题干），停止收集
+                    break
+                j += 1
+
+            if len(option_lines) >= 2:
+                # 找到多个选项行，这些是选项
+                for _, opt_text, opt_has_red, opt_red_keys in option_lines:
+                    _add_option_to_question(current_q, opt_text, opt_has_red, opt_red_keys)
+                i = option_lines[-1][0] + 1  # 跳到最后一个选项行
+                continue
+            elif len(option_lines) == 1:
+                # 只有一个选项行，检查它是否像选项
+                _, opt_text, opt_has_red, opt_red_keys = option_lines[0]
+                # 如果这行是红色的（答案标记），或者是短行，视为选项
+                if opt_has_red or len(opt_text) <= 40:
+                    _add_option_to_question(current_q, opt_text, opt_has_red, opt_red_keys)
+                    i = option_lines[0][0] + 1
+                    continue
+
+        # 默认：题干续行
+        current_q['stem'] += text
+        i += 1
+
+    # 保存最后一题
+    if current_q and current_q['stem']:
+        _save_choice_question(current_q, 'single', questions, chapter_name)
+
+
+def _parse_multiple_choice_v2(items, questions, chapter_name):
+    """解析多选题（学习通格式）
+
+    特点：选项无标记，答案用红色字体标记整行
+    """
+    current_q = None
+
+    i = 0
+    while i < len(items):
+        para_idx, text, red_keys, has_red, red_full_text, _ul = items[i]
+
+        has_explicit_options = bool(re.search(r'（[A-H]）', text))
+        is_new_stem = _is_new_stem_line(text)
+
+        # ===== 情况1: 有显式选项标记 =====
+        if has_explicit_options:
+            opts = _parse_options_with_first_unmarked(text)
+            if current_q is not None:
+                for key, opt_text in opts:
+                    current_q['options'].append((key, opt_text))
+                    if red_keys and key in red_keys:
+                        current_q['red_keys'].append(key)
+                    elif has_red:
+                        if opt_text in red_full_text or red_full_text in opt_text:
+                            current_q['red_keys'].append(key)
+            else:
+                parts = re.split(r'（([A-H])）', text)
+                if len(parts) >= 3:
+                    stem = parts[0].strip()
+                    current_q = {'stem': stem, 'options': [], 'red_keys': []}
+                    for j in range(1, len(parts), 2):
+                        if j + 1 < len(parts):
+                            key = parts[j]
+                            opt_text = parts[j + 1].strip()
+                            current_q['options'].append((key, opt_text))
+                            if red_keys and key in red_keys:
+                                current_q['red_keys'].append(key)
+                            elif has_red and opt_text in red_full_text:
+                                current_q['red_keys'].append(key)
+                else:
+                    current_q = {'stem': text, 'options': [], 'red_keys': []}
+            i += 1
+            continue
+
+        # ===== 情况2: 新题干开始 =====
+        if is_new_stem:
+            if current_q and current_q['stem']:
+                _save_choice_question(current_q, 'multiple', questions, chapter_name)
+            current_q = {'stem': text, 'options': [], 'red_keys': []}
+            i += 1
+            continue
+
+        # ===== 情况3: 选项行或题干续行 =====
+        if current_q is None:
+            current_q = {'stem': text, 'options': [], 'red_keys': []}
+            i += 1
+            continue
+
+        if len(current_q['options']) >= 4:
+            _save_choice_question(current_q, 'multiple', questions, chapter_name)
+            current_q = {'stem': text, 'options': [], 'red_keys': []}
+            i += 1
+            continue
+
+        if current_q['stem'].endswith(('。', '？', '！')):
+            _add_option_to_question(current_q, text, has_red, red_keys)
+            i += 1
+            continue
+
+        if current_q['stem'].endswith(('，', ',')):
+            current_q['stem'] += text
+            i += 1
+            continue
+
+        # 关键逻辑：题干不以句号结尾，收集后续选项行
+        if not current_q['options']:
+            option_lines = []
+            j = i
+            while j < len(items):
+                j_text = items[j][1]
+                j_has_red = items[j][3]
+                j_red_keys = items[j][2]
+
+                if j > i:
+                    if _is_new_stem_line(j_text) or re.search(r'（[A-H]）', j_text):
+                        break
+                    if j_text.startswith('____'):
+                        break
+                    if j_text.endswith(('。', '？', '！')) and len(j_text) > 15:
+                        break
+                    if j_text.endswith('是') and len(j_text) > 15:
+                        break
+
+                if len(j_text) <= 40 and not j_text.endswith(('，', ',')):
+                    option_lines.append((j, j_text, j_has_red, j_red_keys))
+                elif j_text.endswith(('，', ',')):
+                    break
+                else:
+                    break
+                j += 1
+
+            if len(option_lines) >= 2:
+                for _, opt_text, opt_has_red, opt_red_keys in option_lines:
+                    _add_option_to_question(current_q, opt_text, opt_has_red, opt_red_keys)
+                i = option_lines[-1][0] + 1
+                continue
+            elif len(option_lines) == 1:
+                _, opt_text, opt_has_red, opt_red_keys = option_lines[0]
+                if opt_has_red or len(opt_text) <= 40:
+                    _add_option_to_question(current_q, opt_text, opt_has_red, opt_red_keys)
+                    i = option_lines[0][0] + 1
+                    continue
+
+        current_q['stem'] += text
+        i += 1
+
+    if current_q and current_q['stem']:
+        _save_choice_question(current_q, 'multiple', questions, chapter_name)
+
+
 def parse_docx_to_chapters(filepath):
-    """解析Word文件，返回按章节分组的题目字典"""
-    questions = parse_docx_file(filepath)
+    """解析Word文件，返回按章节分组的题目字典
+
+    自动检测文件格式：
+    - 学习通格式（每个章节有独立题型标记）→ 使用 parse_docx_file_v2
+    - 旧格式（全局题型标记）→ 使用 parse_docx_file
+    """
+    # 先检测是否是学习通格式
+    doc = docx.Document(filepath)
+    first_section_count = 0
+    for p in doc.paragraphs[:300]:
+        text = p.text.strip()
+        if text in ('一、单项选择题', '一、单选题'):
+            first_section_count += 1
+    is_v2_format = first_section_count > 1  # 多个"一、单项选择题"说明是新格式
+
+    if is_v2_format:
+        questions = parse_docx_file_v2(filepath)
+    else:
+        questions = parse_docx_file(filepath)
 
     chapters = {}
     for q in questions:
@@ -747,3 +1124,123 @@ def parse_docx_to_chapters(filepath):
         chapters[chapter_name].append(q)
 
     return chapters
+
+
+def parse_docx_file_v2(filepath):
+    """解析学习通格式的Word题库文件（适配考试版）
+
+    格式特点：每个章节有独立的题型标记（一、单项选择题 / 二、多项选择题 / 三、判断题）
+    """
+    doc = docx.Document(filepath)
+
+    # 从目录中提取章节名称
+    chapter_names = _extract_chapter_names_from_toc(doc)
+
+    # 收集表格中的判断题答案
+    table_judge_answers = {}
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells]
+            if len(cells) >= 2:
+                q_text = cells[0]
+                ans_text = cells[1]
+                if '（√）' in ans_text or '（×）' in ans_text:
+                    answer = '√' if '√' in ans_text else '×'
+                    table_judge_answers[q_text[:20]] = answer
+
+    # 第一遍：收集所有段落并识别章节边界
+    # 章节由"一、单项选择题"分隔（每次出现代表新章节）
+    all_items = []
+    current_type = None
+    current_chapter_idx = -1
+    found_first_section = False  # 是否已找到第一个题型标记
+
+    for para_idx, para in enumerate(doc.paragraphs):
+        text = para.text.strip()
+        if not text:
+            continue
+
+        # 跳过 [WARNING] 标记
+        if '[WARNING:' in text:
+            continue
+
+        # 检测章节边界（"一、单项选择题"出现 = 新章节开始）
+        if text in ('一、单项选择题', '一、单选题'):
+            current_chapter_idx += 1
+            current_type = 'single'
+            found_first_section = True
+            continue
+
+        # 跳过第一个题型标记之前的所有内容（目录等）
+        if not found_first_section:
+            continue
+
+        # 检测题型切换（在当前章节内）
+        if text in ('二、多项选择题', '二、多选题'):
+            current_type = 'multiple'
+            continue
+        elif text in ('三、判断题', '四、判断题'):
+            current_type = 'judge'
+            continue
+        elif text in ('三、填空题',):
+            current_type = 'blank'
+            continue
+        elif text in ('五、简答题', '六、材料论述题'):
+            current_type = None
+            continue
+
+        # 跳过答案行
+        if text.startswith('【答案】') or text.startswith('【参考答案】'):
+            continue
+
+        if current_type is None or current_chapter_idx < 0:
+            continue
+
+        # 获取红色标记的选项
+        red_keys, has_red, red_full_text = _get_line_red_answer_keys(para)
+        # 获取下划线文本（填空题答案用）
+        underline_texts = _get_underline_texts(para)
+
+        all_items.append((para_idx, current_type, text, red_keys, has_red, current_chapter_idx, red_full_text, underline_texts))
+
+    # 第二遍：解析题目
+    questions = []
+    _parse_all_items_v2(all_items, questions, table_judge_answers, chapter_names)
+
+    return questions
+
+
+def _parse_all_items_v2(all_items, questions, table_judge_answers, chapter_names):
+    """解析所有条目（学习通格式），按章节和题型分组"""
+    # 按 (章节idx, 题型) 分组
+    groups = []
+    current_key = None
+    current_items = []
+
+    for item in all_items:
+        para_idx, qtype, text, red_keys, has_red, chapter_idx, red_full_text, underline_texts = item
+        key = (chapter_idx, qtype)
+
+        if key != current_key:
+            if current_items:
+                groups.append((current_key, current_items[:]))
+            current_key = key
+            current_items = []
+
+        current_items.append((para_idx, text, red_keys, has_red, red_full_text, underline_texts))
+
+    if current_items:
+        groups.append((current_key, current_items[:]))
+
+    # 解析每组
+    for (chapter_idx, qtype), items in groups:
+        chapter_name = chapter_names[chapter_idx] if chapter_idx < len(chapter_names) else f'第{chapter_idx+1}章'
+
+        if qtype == 'single':
+            _parse_single_choice_v2(items, questions, chapter_name)
+        elif qtype == 'multiple':
+            _parse_multiple_choice_v2(items, questions, chapter_name)
+        elif qtype == 'blank':
+            _parse_blanks(items, questions, chapter_name)
+        elif qtype == 'judge':
+            _parse_judges(items, questions, chapter_name, table_judge_answers)
